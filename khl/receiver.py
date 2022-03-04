@@ -35,6 +35,10 @@ class Receiver(AsyncRunnable, ABC):
         self._queue = queue
 
     @abstractmethod
+    def stop(self):
+        raise NotImplementedError
+
+    @abstractmethod
     async def start(self):
         raise NotImplementedError
 
@@ -44,6 +48,7 @@ class WebsocketReceiver(Receiver):
     def __init__(self, cert: Cert, compress: bool):
         self._cert = cert
         self.compress = compress
+        self._running = True
 
         self._NEWEST_SN = 0
         self._RAW_GATEWAY = ''
@@ -52,8 +57,11 @@ class WebsocketReceiver(Receiver):
     def type(self) -> str:
         return 'websocket'
 
+    def stop(self):
+        self._running = False
+
     async def heartbeat(self, ws_conn: ClientWebSocketResponse):
-        while True:
+        while self._running:
             try:
                 await asyncio.sleep(26)
                 await ws_conn.send_json({'s': 2, 'sn': self._NEWEST_SN})
@@ -73,11 +81,18 @@ class WebsocketReceiver(Receiver):
                 self._RAW_GATEWAY = res_json['data']['url']
 
             async with cs.ws_connect(self._RAW_GATEWAY) as ws_conn:
-                asyncio.ensure_future(self.heartbeat(ws_conn), loop=self.loop)
+                heartbeet_task = asyncio.ensure_future(self.heartbeat(ws_conn), loop=self.loop)
 
                 log.info('[ init ] launched')
 
                 async for raw in ws_conn:
+                    if not self._running:
+                        # Await for heartbeet to stop first
+                        await heartbeet_task
+                        # Then we shutdown websocket connection
+                        await ws_conn.close()
+                        # And break out of the loop, exiting the ws_conn context
+                        break
                     raw: WSMessage
                     try:
                         data = raw.data
@@ -102,6 +117,7 @@ class WebhookReceiver(Receiver):
         self.app = web.Application()
         self.compress = compress
         self.sn_dup_map = {}
+        self._running = False
 
     @property
     def type(self) -> str:
@@ -119,6 +135,9 @@ class WebhookReceiver(Receiver):
                 return True
         self.sn_dup_map[sn] = current
         return False
+
+    def stop(self):
+        self._running = False
 
     async def start(self):
 
@@ -158,5 +177,7 @@ class WebhookReceiver(Receiver):
 
         await site.start()
 
-        while True:
-            await asyncio.sleep(3600)  # sleep forever
+        while self._running:
+            await asyncio.sleep(1)  # sleep while server is still running
+        
+        await runner.cleanup()

@@ -49,6 +49,9 @@ class Gateway:
         self.receiver.pkg_queue = in_queue
         await self.receiver.start()
 
+    def stop(self):
+        self.receiver.stop()
+
 
 class Requestable(ABC):
     """

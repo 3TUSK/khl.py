@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import signal
 from typing import Dict, List, Callable, Coroutine, Union, IO
 
 from . import api
@@ -33,6 +34,8 @@ class Client(Requestable, AsyncRunnable):
 
         self._handler_map = {}
         self._pkg_queue = asyncio.Queue()
+        self.running = True
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
 
     def register(self, type: MessageTypes, handler: TypeHandler):
         if not asyncio.iscoroutinefunction(handler):
@@ -50,7 +53,7 @@ class Client(Requestable, AsyncRunnable):
         """
         consume `pkg` from `event_queue`
         """
-        while True:
+        while self.running: # TODO Also wait until all enqueued package are handled?
             pkg: Dict = await self._pkg_queue.get()
             log.debug(f'upcoming pkg: {pkg}')
 
@@ -97,6 +100,10 @@ class Client(Requestable, AsyncRunnable):
         if msg.type in self._handler_map and self._handler_map[msg.type]:
             for handler in self._handler_map[msg.type]:
                 asyncio.ensure_future(self._handle_safe(handler)(msg), loop=self.loop)
+
+    def _handle_sigterm(self, signal, frame):
+        self.running = False
+        self.gate.stop()
 
     @staticmethod
     def _handle_safe(handler: TypeHandler):
